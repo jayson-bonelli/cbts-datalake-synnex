@@ -1,0 +1,19 @@
+version: 0.2
+phases:
+  install:
+    runtime-versions:
+      nodejs: 12
+      python: 3.8
+
+  pre_build:
+    commands:
+      - npm install
+
+  build:
+    commands:
+      - ./node_modules/.bin/serverless deploy --stage $STAGE
+      - bash src/deploy/post_deploy.sh $STAGE
+
+artifacts:
+  files:
+    - "**/*"

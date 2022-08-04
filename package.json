@@ -1,0 +1,26 @@
+{
+  "name": "cbtsai-datalake-synnex",
+  "version": "1.0.0",
+  "description": "Datalake architecture for Synnex data.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CBTS-developers/cbtsai-datalake-synnex.git"
+  },
+  "author": "Jayson Bonelli",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/CBTS-developers/cbtsai-datalake-synnex/issues"
+  },
+  "homepage": "https://github.com/CBTS-developers/cbtsai-datalake-synnex#readme",
+  "devDependencies": {
+    "aws-sdk": "^2.991.0",
+    "serverless-offline": "^8.2.0",
+    "serverless": "^2.59.0",
+    "serverless-python-requirements": "^5.1.1",
+    "serverless-step-functions": "^3.0.0"
+  }
+}

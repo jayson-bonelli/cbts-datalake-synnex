@@ -1,0 +1,4 @@
+awswrangler==2.10.0
+requests
+cachetools
+smart_open[s3]==5.2.1

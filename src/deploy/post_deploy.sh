@@ -1,0 +1,1 @@
+aws s3 cp src/glue/ s3://cbtsai-datalake-synnex-${1}/glue_helper/scripts/ --recursive
