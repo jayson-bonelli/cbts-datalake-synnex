@@ -9,7 +9,6 @@ from cachetools import cached, TTLCache
 import urllib.parse
 import zlib
 import uuid
-from smart_open import open
 
 import logging
 logger = logging.getLogger()
@@ -92,7 +91,10 @@ def save_to_datalake(table, data, mode='append', partition_cols=None):
 @cached(cache=TTLCache(maxsize=4196,ttl=600))
 def get_api_keys():
     API_KEYS = {
-        "vco33-usvi1": get_ssm_param(f"/velocloud/vco33-usvi1/api_key", True)
+        "User_id": get_ssm_param(f"/synnex/dev", True),
+        "Password": get_ssm_param(f"/synnex/dev", True),
+        "CustomerNumber": get_ssm_param(f"/synnex/dev", True)
+
     }
     return API_KEYS
 
