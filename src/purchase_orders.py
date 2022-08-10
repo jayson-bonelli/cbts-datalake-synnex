@@ -36,7 +36,7 @@ def get_po_number(event={}, context={}):
     return to_return
 
 
-def get_po_data(event={}, context={}):
+def get_po_status(event={}, context={}):
     logger.info(json.dumps(event))
     parameter = client.get_parameter(Name='/synnex/dev/credentials', WithDecryption=True)
     params = json.loads(parameter['Parameter']['Value'])
@@ -71,15 +71,23 @@ def get_po_data(event={}, context={}):
     if response.status_code !=200:
         raise requests.HTTPError(f'{response.status_code}: {response.text}')
     elif response.status_code == 200 and len(response.json()) > 0:
+
         data = response.json()
 
-        save_response = save_to_datalake(data=data, table='po_status', mode='overwrite')
+    if len(data) > 0:
+        enriched_data = []
+        processed_year = datetime.now(tz).strftime('%Y')
+        processed_month = datetime.now(tz).strftime('%M')
 
-        response_json = {
-            "save_response": save_response
-        }
+        for e in data:
+            e['processed_year'] = processed_year
+            e['processed_month'] = processed_month
+            enriched_data.append(e)
+        data = enriched_data
 
-    return response_json
+    save_response = save_to_datalake(table='po_status', data=data, mode='overwrite', partition_cols=['processed_year', 'processed_month'])
+
+    return save_response
 
 
 

@@ -1,0 +1,438 @@
+service: cbtsai-datalake-synnex
+
+frameworkVersion: "2"
+
+plugins:
+  - serverless-python-requirements
+  - serverless-step-functions
+
+custom:
+  bucketName: ${self:service}-${sls:stage}
+
+  database:
+    prod: synnex
+    dev: synnex_dev
+
+  workgroupName: datalake-synnex
+
+  pythonRequirements:
+    # zip: true
+    noDeploy:
+      - awswrangler
+
+provider:
+  name: aws
+  runtime: python3.8
+  region: us-east-2
+  lambdaHashingVersion: 20201221
+  logRetentionInDays: 365
+  deploymentBucket:
+    blockPublicAccess: true
+  memorySize: 512
+  environment:
+    BUCKET_NAME: ${self:custom.bucketName}
+    DATABASE: ${self:custom.database.${sls:stage}}
+    stage: ${sls:stage}
+    WORKGROUP: ${self:custom.workgroupName}
+  timeout: 900
+
+
+  vpc:
+    securityGroupIds:
+      - sg-09e6c885ed114a491
+    subnetIds:
+      - subnet-012bbe83fa724588b
+      - subnet-04da3be61f83b9d0f
+
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - "ssm:GetParameter"
+            - "ssm:GetParameters"
+            - "ssm:GetParametersByPath"
+          Resource: "*"
+
+        - Effect: Allow
+          Action:
+            - "glue:Get*"
+            - "glue:CreateTable"
+            - "glue:BatchCreatePartition"
+            - "glue:UpdateTable"
+            - "glue:List*"
+            - "glue:Start*"
+          Resource: "*"
+
+        - Effect: Allow
+          Action:
+            - "s3:ListBucket"
+            - "s3:GetObject"
+            - "s3:GetBucketLocation"
+          Resource:
+            - !Sub arn:aws:s3:::aws-athena-query-results-${AWS::Region}-${AWS::AccountId}
+            - !Sub arn:aws:s3:::aws-athena-query-results-${AWS::Region}-${AWS::AccountId}/*
+
+        - Effect: Allow
+          Action:
+            - "s3:PutObject"
+            - "s3:DeleteObject"
+            - 's3:GetBucketNotification'
+            - 's3:PutBucketNotification'
+          Resource:
+            - arn:aws:s3:::${self:custom.bucketName}
+            - arn:aws:s3:::${self:custom.bucketName}/*
+            - !Sub arn:aws:s3:::aws-athena-query-results-${AWS::Region}-${AWS::AccountId}/*
+
+        - Effect: Allow
+          Action:
+            - "s3:*"
+          Resource:
+            - arn:aws:s3:::${self:custom.bucketName}
+            - arn:aws:s3:::${self:custom.bucketName}/*
+
+        - Effect: Allow
+          Action:
+            - "athena:GetWorkGroup"
+            - "athena:StartQueryExecution"
+            - "athena:GetQueryResults"
+            - "athena:GetQueryExecution"
+            - "athena:ListQueryExecutions"
+          Resource: "*"
+
+functions:
+  get-po-number:
+    handler: src/purchase_orderss.get_po_number
+    layers:
+      - arn:aws:lambda:${aws:region}:${aws:accountId}:layer:awswrangler:1
+
+  get-po-status:
+    handler: src/purchase_orderss.get_po_data
+    layers:
+      - arn:aws:lambda:${aws:region}:${aws:accountId}:layer:awswrangler:1
+
+  prepare_staging:
+    handler: utilities.prepare_staging
+    layers:
+      - arn:aws:lambda:${aws:region}:${aws:accountId}:layer:awswrangler:1
+
+  save_data:
+    handler: utilities.save_data
+    layers:
+      - arn:aws:lambda:${aws:region}:${aws:accountId}:layer:awswrangler:1
+    memorySize: 10000
+
+stepFunctions:
+  validate: true
+  stateMachines:
+    get-po-number:
+      name: ${self:service}-${sls:stage}-get-po-number
+      id: ${self:service}-${sls:stage}-get-po-number
+      role:
+        Fn::GetAtt: ["GetSynnexSfRole", "Arn"]
+      alarms:
+        topics:
+          alarm: !ImportValue CriticalAlertsAlarmTopic${sls:stage}
+        metrics:
+          - executionsTimedOut
+          - executionsFailed
+          - executionThrottled
+
+      loggingConfig:
+        level: ERROR
+        includeExecutionData: true
+        destinations:
+          - Fn::GetAtt: [GetSynnexPoNumberLogGroup, Arn]
+
+      definition:
+        Comment: "Get all Synnex PO numbers from Athena"
+        StartAt: Get PO Number from Athena
+
+        States:
+          Get PO Number from Athena:
+            Type: Task
+            Next: Get PO data
+            Resource: !Sub arn:aws:lambda:${AWS::Region}::function:${self:service}-${sls:stage}-get-po-number
+
+          Get PO data:
+            Type: Map
+            InputPath: $
+            ItemsPath: $.po_data
+            OutputPath: null
+            End: true
+            MaxConcurrency: 5
+                  Retry:
+                    - ErrorEquals:
+                        - States.ALL
+                      IntervalSeconds: 20
+                      MaxAttempts: 5
+                      BackoffRate: 2
+                      
+                Complete:
+                  Type: Succeed
+
+    get-po-status:
+      name: ${self:service}-${sls:stage}-get-po-status
+      id: ${self:service}-${sls:stage}-get-po-status
+      role:
+        Fn::GetAtt: ["GetSynnexSfRole", "Arn"]
+      alarms:
+        topics:
+          alarm: !ImportValue CriticalAlertsAlarmTopic${sls:stage}
+        metrics:
+          - executionsTimedOut
+          - executionsFailed
+          - executionThrottled
+
+      loggingConfig:
+        level: ERROR
+        includeExecutionData: true
+        destinations:
+          - Fn::GetAtt: [GetSynnexPOStatusLogGroup, Arn]
+
+      definition:
+        Comment: "Get PO Status"
+        StartAt: Get PO Status
+
+        States:
+          Get PO Status:
+            Type: Task
+            Next: Copy Staging to Lake
+            Resource: arn:aws:lambda:${aws:region}::function:${self:service}-${sls:stage}-get-po-status
+            Retry:
+              - ErrorEquals:
+                  - States.ALL
+                IntervalSeconds: 60
+                MaxAttempts: 20
+                BackoffRate: 1
+
+          Complete:
+            Type: Succeed
+
+          Copy Staging to Lake:
+            Type: Task
+            Next: Complete
+            Resource: arn:aws:lambda:${aws:region}::function:${self:service}-${sls:stage}-save_data
+            Parameters:
+              table: events
+              processor: glue_job
+              output_partition_types: '{"po_number": "char", "processed_year": "string", "processed_month": "string"}'
+
+resources:
+  Resources:
+
+    DataBucket:
+      Type: "AWS::S3::Bucket"
+      Properties:
+        BucketName: ${self:custom.bucketName}
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: AES256
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+        VersioningConfiguration:
+          Status: Enabled
+        AccessControl: Private
+
+
+    GetSynnexSfRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Principal:
+                Service:
+                  - "states.amazonaws.com"
+              Action:
+                - "sts:AssumeRole"
+        Path: "/"
+        Policies:
+          - PolicyName: "root"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - lambda:InvokeFunction
+                  Resource:
+                    - arn:aws:lambda:*:*:function:${self:service}-${sls:stage}*
+                - Effect: Allow
+                  Action:
+                    - states:StartExecution
+                    - states:DescribeExecution
+                    - states:StopExecution
+                  Resource: "*"
+                - Effect: Allow
+                  Action:
+                    - events:PutTargets
+                    - events:PutRule
+                    - events:DescribeRule
+                  Resource: "*"
+                - Effect: Allow # note that these rights are given in the default policy and are required if you want logs out of your lambda(s)
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: "*"
+                - Effect: "Allow"
+                  Action:
+                    - "ec2:CreateNetworkInterface"
+                    - "ec2:DescribeNetworkInterfaces"
+                    - "ec2:DetachNetworkInterface"
+                    - "ec2:DeleteNetworkInterface"
+                  Resource: "*"
+
+                # Tracing
+                - Effect: Allow
+                  Action:
+                    - "xray:PutTraceSegments"
+                    - "xray:PutTelemetryRecords"
+                  Resource:
+                    - "*"
+
+                - Effect: "Allow"
+                  Action:
+                    - "logs:CreateLogDelivery"
+                    - "logs:GetLogDelivery"
+                    - "logs:UpdateLogDelivery"
+                    - "logs:DeleteLogDelivery"
+                    - "logs:ListLogDeliveries"
+                    - "logs:PutResourcePolicy"
+                    - "logs:DescribeResourcePolicies"
+                    - "logs:DescribeLogGroups"
+                  Resource: "*"
+
+    GetSynnexPONumberLogGroup:
+      Type: "AWS::Logs::LogGroup"
+      Properties:
+        LogGroupName: "/aws/vendedlogs/states/${self:service}-${sls:stage}/get-po-number-sf"
+        RetentionInDays: 365
+
+    GetSynnexPOStatusLogGroup:
+      Type: "AWS::Logs::LogGroup"
+      Properties:
+        LogGroupName: "/aws/vendedlogs/states/${self:service}-${sls:stage}/get-po-status-sf"
+        RetentionInDays: 365
+
+    GetSynnexPOStatusParquetLogGroup:
+      Type: "AWS::Logs::LogGroup"
+      Properties:
+        LogGroupName: "/aws/vendedlogs/states/${self:service}-${sls:stage}/get-po-status-parquet-sf"
+        RetentionInDays: 365
+
+    ScheduledStartSFRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            -
+              Effect: "Allow"
+              Principal:
+                Service:
+                  - "events.amazonaws.com"
+              Action:
+                - "sts:AssumeRole"
+        Path: "/"
+        Policies:
+          -
+            PolicyName: "download_schedule"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                -
+                  Effect: "Allow"
+                  Action:
+                    - "states:StartExecution"
+                  Resource: "*"
+
+    StagingToCuratedGlueJobRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            -
+              Effect: "Allow"
+              Principal:
+                Service:
+                  - "glue.amazonaws.com"
+              Action:
+                - "sts:AssumeRole"
+        Path: "/"
+        Policies:
+          -
+            PolicyName: "root"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                -
+                  Effect: "Allow"
+                  Action: "*"
+                  Resource: "*"
+
+    StagingToCuratedGlueJob:
+      Type: AWS::Glue::Job
+      Properties:
+        Command:
+          Name: glueetl
+          ScriptLocation: !Join [ '', [ "s3://", !Ref DataBucket, "/glue_helper/scripts/staging_to_curated_s3.py" ] ]
+          PythonVersion: 3
+        GlueVersion: "3.0"
+        DefaultArguments:
+          "--enable-glue-datacatalog": "true"
+          "--TempDir": !Join [ '', [ "s3://", !Ref DataBucket, "/glue_helper/temporary/staging_to_curated/" ] ]
+          "--encryption-type": "sse-s3"
+          "--job-language": "python"
+          "--additional-python-modules": "awswrangler"
+          "--spark-event-logs-path": !Join [ '', [ "s3://", !Ref DataBucket, "/glue_helper/logs/staging_to_curated/spark/" ] ]
+          "--enable-job-insights": "true"
+          "--enable-auto-scaling": "true"
+          "--job-bookmark-option": "job-bookmark-disable"
+          "--input_s3_bucket_name": ""
+          "--input_s3_bucket_prefix": ""
+          "--input_s3_format": "json"
+          "--output_s3_bucket_name": ""
+          "--output_s3_bucket_prefix": ""
+          "--output_glue_database_name": ""
+          "--output_glue_table_name": ""
+          "--output_partitions_types": '{"processed_year": "string", "processed_month": "string"}'
+          "--output_s3_compression": "snappy"
+          "--output_s3_format": "glueparquet"
+        MaxRetries: 0
+        Name: ${self:service}-${sls:stage}-staging_to_curated
+        Role: !GetAtt StagingToCuratedGlueJobRole.Arn
+        ExecutionProperty:
+          MaxConcurrentRuns: 10
+        WorkerType: "G.1X"
+        NumberOfWorkers: 10
+        Description: "Read data from staging data bucket, and convert to different format, and update Glue Table"
+
+    AthenaWorkgroup:
+      Type: AWS::Athena::WorkGroup
+      Properties:
+        Name: ${self:custom.workgroupName}
+        WorkGroupConfiguration:
+          BytesScannedCutoffPerQuery: 107374182400
+          PublishCloudWatchMetricsEnabled: true
+          ResultConfiguration:
+            EncryptionConfiguration:
+              EncryptionOption: SSE_S3
+            OutputLocation: s3://aws-athena-query-results-${aws:region}-${aws:accountId}/results/synnex/
+      Condition: IsDev
+
+  Parameters:
+    StageParam:
+      Type: String
+      Default: ${sls:stage}
+
+  Conditions:
+    IsDev: !Equals
+      - !Ref StageParam
+      - "dev"
